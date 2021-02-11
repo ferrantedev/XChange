@@ -1,18 +1,12 @@
 package org.knowm.xchange.binance.service;
 
-import java.io.IOException;
-import java.util.List;
-import java.util.function.Function;
-import java.util.stream.Collectors;
+import lombok.extern.slf4j.Slf4j;
 import org.knowm.xchange.binance.BinanceAdapters;
 import org.knowm.xchange.binance.BinanceAuthenticated;
 import org.knowm.xchange.binance.BinanceErrorAdapter;
 import org.knowm.xchange.binance.BinanceExchange;
 import org.knowm.xchange.binance.dto.BinanceException;
-import org.knowm.xchange.binance.dto.marketdata.BinanceAggTrades;
-import org.knowm.xchange.binance.dto.marketdata.BinanceOrderbook;
-import org.knowm.xchange.binance.dto.marketdata.BinancePriceQuantity;
-import org.knowm.xchange.binance.dto.marketdata.BinanceTicker24h;
+import org.knowm.xchange.binance.dto.marketdata.*;
 import org.knowm.xchange.client.ResilienceRegistries;
 import org.knowm.xchange.currency.CurrencyPair;
 import org.knowm.xchange.dto.Order.OrderType;
@@ -26,126 +20,169 @@ import org.knowm.xchange.exceptions.ExchangeException;
 import org.knowm.xchange.service.marketdata.MarketDataService;
 import org.knowm.xchange.service.marketdata.params.Params;
 
+import java.io.IOException;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import java.util.function.Function;
+import java.util.stream.Collectors;
+
+@Slf4j
 public class BinanceMarketDataService extends BinanceMarketDataServiceRaw
-    implements MarketDataService {
+        implements MarketDataService {
 
-  public BinanceMarketDataService(
-      BinanceExchange exchange,
-      BinanceAuthenticated binance,
-      ResilienceRegistries resilienceRegistries) {
-    super(exchange, binance, resilienceRegistries);
-  }
+    public BinanceMarketDataService(
+            BinanceExchange exchange,
+            BinanceAuthenticated binance,
+            ResilienceRegistries resilienceRegistries) {
+        super(exchange, binance, resilienceRegistries);
+    }
 
-  @Override
-  public OrderBook getOrderBook(CurrencyPair pair, Object... args) throws IOException {
-    try {
-      int limitDepth = 100;
+    public static OrderBook convertOrderBook(BinanceOrderbook ob, CurrencyPair pair) {
+        List<LimitOrder> bids =
+                ob.bids.entrySet().stream()
+                        .map(e -> new LimitOrder(OrderType.BID, e.getValue(), pair, null, null, e.getKey()))
+                        .collect(Collectors.toList());
+        List<LimitOrder> asks =
+                ob.asks.entrySet().stream()
+                        .map(e -> new LimitOrder(OrderType.ASK, e.getValue(), pair, null, null, e.getKey()))
+                        .collect(Collectors.toList());
+        return new OrderBook(null, asks, bids);
+    }
 
-      if (args != null && args.length == 1) {
-        Object arg0 = args[0];
-        if (!(arg0 instanceof Integer)) {
-          throw new ExchangeException("Argument 0 must be an Integer!");
+    @Override
+    public List<Ticker> getUnstableData(CurrencyPair currencyPair, int minuteInterval) throws IOException {
+        KlineInterval klineInterval = null;
+        if (minuteInterval == 5) {
+            klineInterval = KlineInterval.m5;
+        } else if (minuteInterval == 15) {
+            klineInterval = KlineInterval.m15;
+        } else if (minuteInterval == 30) {
+            klineInterval = KlineInterval.m30;
+        } else if (minuteInterval == 60) {
+            klineInterval = KlineInterval.h1;
+        } else if (minuteInterval == 120) {
+            klineInterval = KlineInterval.h2;
+        } else if (minuteInterval == 360) {
+            klineInterval = KlineInterval.h6;
+        } else if (minuteInterval == 720) {
+            klineInterval = KlineInterval.h12;
         } else {
-          limitDepth = (Integer) arg0;
+            log.info("Not loading unstable data");
+            return new ArrayList<>();
         }
-      }
-      BinanceOrderbook binanceOrderbook = getBinanceOrderbook(pair, limitDepth);
-      return convertOrderBook(binanceOrderbook, pair);
-    } catch (BinanceException e) {
-      throw BinanceErrorAdapter.adapt(e);
-    }
-  }
+        log.info("Loading unstable data for kline {}", klineInterval.code());
 
-  public static OrderBook convertOrderBook(BinanceOrderbook ob, CurrencyPair pair) {
-    List<LimitOrder> bids =
-        ob.bids.entrySet().stream()
-            .map(e -> new LimitOrder(OrderType.BID, e.getValue(), pair, null, null, e.getKey()))
-            .collect(Collectors.toList());
-    List<LimitOrder> asks =
-        ob.asks.entrySet().stream()
-            .map(e -> new LimitOrder(OrderType.ASK, e.getValue(), pair, null, null, e.getKey()))
-            .collect(Collectors.toList());
-    return new OrderBook(null, asks, bids);
-  }
+        return this.klines(currencyPair, klineInterval).stream().map((binanceKline ->
+                new Ticker.Builder()
+                        .timestamp(new Date(binanceKline.getCloseTime()))
+                        .last(binanceKline.getClosePrice())
+                        .volume(binanceKline.getVolume())
+                        .high(binanceKline.getHighPrice())
+                        .low(binanceKline.getLowPrice())
+                        .currencyPair(currencyPair)
+                        .build())).collect(Collectors.toList());
+    }
 
-  @Override
-  public Ticker getTicker(CurrencyPair pair, Object... args) throws IOException {
-    try {
-      return ticker24h(pair).toTicker();
-    } catch (BinanceException e) {
-      throw BinanceErrorAdapter.adapt(e);
-    }
-  }
+    @Override
+    public OrderBook getOrderBook(CurrencyPair pair, Object... args) throws IOException {
+        try {
+            int limitDepth = 100;
 
-  @Override
-  public List<Ticker> getTickers(Params params) throws IOException {
-    try {
-      return ticker24h().stream().map(BinanceTicker24h::toTicker).collect(Collectors.toList());
-    } catch (BinanceException e) {
-      throw BinanceErrorAdapter.adapt(e);
+            if (args != null && args.length == 1) {
+                Object arg0 = args[0];
+                if (!(arg0 instanceof Integer)) {
+                    throw new ExchangeException("Argument 0 must be an Integer!");
+                } else {
+                    limitDepth = (Integer) arg0;
+                }
+            }
+            BinanceOrderbook binanceOrderbook = getBinanceOrderbook(pair, limitDepth);
+            return convertOrderBook(binanceOrderbook, pair);
+        } catch (BinanceException e) {
+            throw BinanceErrorAdapter.adapt(e);
+        }
     }
-  }
 
-  /**
-   * optional parameters provided in the args array:
-   *
-   * <ul>
-   *   <li>0: Long fromId optional, ID to get aggregate trades from INCLUSIVE.
-   *   <li>1: Long startTime optional, Timestamp in ms to get aggregate trades from INCLUSIVE.
-   *   <li>2: Long endTime optional, Timestamp in ms to get aggregate trades until INCLUSIVE.
-   *   <li>3: Integer limit optional, Default 500; max 500.
-   * </ul>
-   *
-   * <p>
-   */
-  @Override
-  public Trades getTrades(CurrencyPair pair, Object... args) throws IOException {
-    try {
-      Long fromId = tradesArgument(args, 0, Long::valueOf);
-      Long startTime = tradesArgument(args, 1, Long::valueOf);
-      Long endTime = tradesArgument(args, 2, Long::valueOf);
-      Integer limit = tradesArgument(args, 3, Integer::valueOf);
-      List<BinanceAggTrades> aggTrades =
-          binance.aggTrades(BinanceAdapters.toSymbol(pair), fromId, startTime, endTime, limit);
-      List<Trade> trades =
-          aggTrades.stream()
-              .map(
-                  at ->
-                      new Trade.Builder()
-                          .type(BinanceAdapters.convertType(at.buyerMaker))
-                          .originalAmount(at.quantity)
-                          .currencyPair(pair)
-                          .price(at.price)
-                          .timestamp(at.getTimestamp())
-                          .id(Long.toString(at.aggregateTradeId))
-                          .build())
-              .collect(Collectors.toList());
-      return new Trades(trades, TradeSortType.SortByTimestamp);
-    } catch (BinanceException e) {
-      throw BinanceErrorAdapter.adapt(e);
+    @Override
+    public Ticker getTicker(CurrencyPair pair, Object... args) throws IOException {
+        try {
+            return ticker24h(pair).toTicker();
+        } catch (BinanceException e) {
+            throw BinanceErrorAdapter.adapt(e);
+        }
     }
-  }
 
-  private <T extends Number> T tradesArgument(
-      Object[] args, int index, Function<String, T> converter) {
-    if (index >= args.length) {
-      return null;
-    }
-    Object arg = args[index];
-    if (arg == null) {
-      return null;
-    }
-    String argStr = arg.toString();
-    try {
-      return converter.apply(argStr);
-    } catch (NumberFormatException e) {
-      throw new IllegalArgumentException(
-          "Argument on index " + index + " is not a number: " + argStr, e);
-    }
-  }
 
-  public List<Ticker> getAllBookTickers() throws IOException {
-    List<BinancePriceQuantity> binanceTickers = tickerAllBookTickers();
-    return BinanceAdapters.adaptPriceQuantities(binanceTickers);
-  }
+    @Override
+    public List<Ticker> getTickers(Params params) throws IOException {
+        try {
+            return ticker24h().stream().map(BinanceTicker24h::toTicker).collect(Collectors.toList());
+        } catch (BinanceException e) {
+            throw BinanceErrorAdapter.adapt(e);
+        }
+    }
+
+    /**
+     * optional parameters provided in the args array:
+     *
+     * <ul>
+     *   <li>0: Long fromId optional, ID to get aggregate trades from INCLUSIVE.
+     *   <li>1: Long startTime optional, Timestamp in ms to get aggregate trades from INCLUSIVE.
+     *   <li>2: Long endTime optional, Timestamp in ms to get aggregate trades until INCLUSIVE.
+     *   <li>3: Integer limit optional, Default 500; max 500.
+     * </ul>
+     *
+     * <p>
+     */
+    @Override
+    public Trades getTrades(CurrencyPair pair, Object... args) throws IOException {
+        try {
+            Long fromId = tradesArgument(args, 0, Long::valueOf);
+            Long startTime = tradesArgument(args, 1, Long::valueOf);
+            Long endTime = tradesArgument(args, 2, Long::valueOf);
+            Integer limit = tradesArgument(args, 3, Integer::valueOf);
+            List<BinanceAggTrades> aggTrades =
+                    binance.aggTrades(BinanceAdapters.toSymbol(pair), fromId, startTime, endTime, limit);
+            List<Trade> trades =
+                    aggTrades.stream()
+                            .map(
+                                    at ->
+                                            new Trade.Builder()
+                                                    .type(BinanceAdapters.convertType(at.buyerMaker))
+                                                    .originalAmount(at.quantity)
+                                                    .currencyPair(pair)
+                                                    .price(at.price)
+                                                    .timestamp(at.getTimestamp())
+                                                    .id(Long.toString(at.aggregateTradeId))
+                                                    .build())
+                            .collect(Collectors.toList());
+            return new Trades(trades, TradeSortType.SortByTimestamp);
+        } catch (BinanceException e) {
+            throw BinanceErrorAdapter.adapt(e);
+        }
+    }
+
+    private <T extends Number> T tradesArgument(
+            Object[] args, int index, Function<String, T> converter) {
+        if (index >= args.length) {
+            return null;
+        }
+        Object arg = args[index];
+        if (arg == null) {
+            return null;
+        }
+        String argStr = arg.toString();
+        try {
+            return converter.apply(argStr);
+        } catch (NumberFormatException e) {
+            throw new IllegalArgumentException(
+                    "Argument on index " + index + " is not a number: " + argStr, e);
+        }
+    }
+
+    public List<Ticker> getAllBookTickers() throws IOException {
+        List<BinancePriceQuantity> binanceTickers = tickerAllBookTickers();
+        return BinanceAdapters.adaptPriceQuantities(binanceTickers);
+    }
 }

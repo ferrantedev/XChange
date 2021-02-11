@@ -41,6 +41,10 @@ public interface MarketDataService extends BaseService {
     throw new NotYetImplementedForExchangeException("getTicker");
   }
 
+  default List<Ticker> getUnstableData(CurrencyPair currencyPair, int minuteInterval) throws IOException {
+    throw new NotYetImplementedForExchangeException("getTicker");
+  }
+
   /**
    * Get the tickers representing the current exchange rate for the provided parameters
    *
